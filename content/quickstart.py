@@ -41,8 +41,26 @@ st.markdown(
         This tool allows for annotation of various ions, fast discovery of PTMs, and FDR-filtering of results! 
         """
     )
-    #In docker, OpenMS-app (executable) can be downloadable from github
-    #TODO: make zip possible 
+
+if Path("OpenMS-App.zip").exists():
+    st.subheader(
+        """
+        Download the latest version for Windows here by clicking the button below.
+        """
+    )
+    with open("OpenMS-App.zip", "rb") as file:
+        st.download_button(
+            label="Download for Windows",
+            data=file,
+            file_name="OpenMS-App.zip",
+            mime="archive/zip",
+            type="primary",
+        )
+    st.markdown(
+        """
+        Extract the zip file and run the installer (.msi) file to install the app. The app can then be launched using the corresponding desktop icon.
+        """
+    )
     
 st.markdown("""
         ## Quickstart 
