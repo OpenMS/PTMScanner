@@ -6,6 +6,7 @@ from src.view import plot_ms2_spectrum, plot_ms2_spectrum_full
 from st_aggrid import GridOptionsBuilder, AgGrid, GridUpdateMode, ColumnsAutoSizeMode
 from src.common.captcha_ import *
 from pyopenms import *
+from scipy.spatial import cKDTree
 
 params = page_setup()
 
@@ -106,141 +107,119 @@ tabs = st.tabs(tabs)
 
 #with View Results tab
 with tabs[0]:  
+    #make sure load all example result files
+    load_example_result_files()
+
+    # take all .idXML files in current session files; .idXML is CSMs 
+    session_files = [f.name for f in Path(st.session_state.workspace,"result-files").iterdir() if (f.name.endswith(".idXML"))]
+    
+    # select box to select .idXML file to see the results
+    selected_file = st.selectbox("choose a currently protocol file to view",session_files)
+
+    #current workspace session path
+    workspace_path = Path(st.session_state.workspace)
 
     tabs_ = st.tabs(["Sage Output Table", "PTMs Table"])
     
+    if selected_file:
 
-    ## selected .idXML file
-    
-        #with CSMs Table
-    with tabs_[0]:
-        load_example_result_files()
-        # take all .idXML files in current session files; .idXML is CSMs 
-        session_files = [f.name for f in Path(st.session_state.workspace,"result-files").iterdir() if (f.name.endswith(".idXML"))]
-        mzML_files = [f2.name for f2 in Path(st.session_state.workspace,"mzML-files").iterdir() if (f2.name.endswith(".mzML"))]
-        # select box to select .idXML file to see the results
-        selected_file = st.selectbox("choose an output idXML file to view",session_files)
-        selected_mzML_file = st.selectbox("choose the corresponding mzML file for annotation",mzML_files)
-
-        #current workspace session path
-        workspace_path = Path(st.session_state.workspace)
-        #tabs on page to show different results
-        
-        if selected_file:
-            #st.write("CSMs Table")
-            #take all CSMs as dataframe
+        with tabs_[0]:
+            
             CSM_= readAndProcessIdXML(workspace_path / "result-files" /f"{selected_file}")
-            #st.write(selected_file)
 
             ##TODO setup more better/effiecient
             # Remove the out pattern of idxml
             #file_name_wout_out = remove_substrings(selected_file, nuxl_out_pattern)
 
             if (selected_file.find("Example") != -1): 
-               file_name_wout_out = "Example_RNA_UV_XL"
+               file_name_wout_out = "Example"
             else: 
                 file_name_wout_out = selected_file.replace(".idXML", "")
 
-         
-            if selected_mzML_file: 
-                MS2 = process_mzML_file(os.path.join(Path.cwd().parent ,  str(st.session_state.workspace)[3:] , "mzML-files" ,selected_mzML_file))
-                if MS2 is None:
-                    st.warning("The corresponding " +  ".mzML file could not be found. Please re-upload the mzML file to visualize all peaks.")
+            MS2 = process_mzML_file(os.path.join(Path.cwd().parent ,  str(st.session_state.workspace)[3:] , "mzML-files" ,f"{file_name_wout_out}.mzML"))
+            if MS2 is None:
+                st.warning("The corresponding " +  ".mzML file could not be found. Please re-upload the mzML file to visualize all peaks.")
                                 
-                if CSM_ is None: 
-                    st.warning("No CSMs found in selected idXML file")
-                else:
+            if CSM_ is None: 
+                st.warning("No CSMs found in selected idXML file")
+            else:
                     
-                    #if CSM_['NuXL:NA'].str.contains('none').any():
-                    #    st.warning("nonXL CSMs found")  
-                    #else:
+                gb = GridOptionsBuilder.from_dataframe(CSM_[list(CSM_.columns.values)])
+
+                # configure selection
+                gb.configure_selection(selection_mode="single", use_checkbox=True)
+                gb.configure_side_bar()
+                gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=10)
+                gridOptions = gb.build()
+                
+                data = AgGrid(CSM_,
+                            gridOptions=gridOptions,
+                            enable_enterprise_modules=True,
+                            allow_unsafe_jscode=True,
+                            update_mode=GridUpdateMode.SELECTION_CHANGED,
+                            columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS)
+
+                selected_row = data.get("selected_rows")
+                if selected_row:
+                    row = selected_row[0]
                     
-                        # provide dataframe
-                        #st.write(list(CSM_.columns.values))
+                    # Parse annotation arrays
+                    intensities = list(map(float, row['intensities'].split(',')))
+                    mz_values = list(map(float, row['mz_values'].split(',')))
+                    ions = row['ions'].split(',')
+
+                    annotation_data_idxml = {
+                        'intarray': intensities,
+                        'mzarray': mz_values,
+                        'anotarray': ions
+                    }
+
+                    # Build annotation data based on MS2 availability
+                    if MS2 is not None:
+                        mz_full, inten_full = get_mz_intensities_from_ms2(MS2_spectras=MS2, native_id=row['SpecId'])
                         
-                        gb = GridOptionsBuilder.from_dataframe(CSM_[list(CSM_.columns.values)])
+                        # Create a KDTree from annotation m/z values
+                        annotation_mz = np.array(annotation_data_idxml['mzarray'])
+                        tree = cKDTree(annotation_mz.reshape(-1, 1))
 
-                        # configure selection
-                        gb.configure_selection(selection_mode="single", use_checkbox=True)
-                        gb.configure_side_bar()
-                        gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=10)
-                        gridOptions = gb.build()
+                        # Tolerance for m/z matching
+                        tolerance = 0.001
+                        mz_full = np.array(mz_full)
+                        inten_full = np.array(inten_full)
 
+                        # Perform tolerant matching
+                        matches = tree.query_ball_point(mz_full.reshape(-1, 1), r=tolerance)
 
-                        
-                        data = AgGrid(CSM_,
-                                    gridOptions=gridOptions,
-                                    enable_enterprise_modules=True,
-                                    allow_unsafe_jscode=True,
-                                    update_mode=GridUpdateMode.SELECTION_CHANGED,
-                                    columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS)
-
-                        #download table
-                        #show_table(CSM_, f"{os.path.splitext(selected_file)[0]}")
-                        #select row by user
-                        selected_row = data["selected_rows"]
-
-                    
-
-                    
-
-                        if not(selected_row is None):
-                            # Create a dictionary of annotation features
-                            annotation_data_idxml = {'intarray': [float(value) for value in {selected_row['intensities'][0]}.pop().split(',')],
-                                    'mzarray': [float(value) for value in {selected_row['mz_values'][0]}.pop().split(',')],
-                                    'anotarray': [str(value) for value in {selected_row['ions'][0]}.pop().split(',')]
-                                }
-                            
-                 
-
-
-                            if MS2 is not None:
-                                # Extract m/z and intensity data from the selected MS2 spectrum
-                                mz_full, inten_full = get_mz_intensities_from_ms2(MS2_spectras=MS2, native_id=selected_row['SpecId'][0])
-                      
-                                scaled = []
-                                for i in annotation_data_idxml['intarray']: 
-                                    scaled.append(i/max(annotation_data_idxml['intarray']))
-                                
-
-                                # Convert annotation_data into a dictionary for efficient matching
-                                annotation_dict = {(round(mz, 2)): (anot, i) for i, mz, anot in zip(scaled, annotation_data_idxml['mzarray'], annotation_data_idxml['anotarray'])}
-
-
-                                # Annotate the data
-                                annotation_data = []
-                                for intensity, mz in zip(inten_full, mz_full):
-                                    mz_r = round(float(mz), 2)
-                                    int_r = round(float(intensity), 2)
-                                    #st.write(mz_r)
-                                    annotation = annotation_dict.get(mz_r, (' ', int_r))
-                                    #st.write(annotation)
-                                    annotation_data.append({
-                                        'mzarray': mz_r,
-                                        'intarray': annotation[1],
-                                        'anotarray': annotation[0]
-                                    }) 
-                            
-                            if MS2 is None:
-                                annotation_data = annotation_data_idxml # just provide the annotated peaks
-                                st.write("MS2 was none")
-    
-                            # Check if the lists are not empty
-                            if annotation_data:
-                                #st.write("Gets to annotation data")
-                                # Create the DataFrame
-                                annotation_df = pd.DataFrame(annotation_data)
-                                #st.write(annotation_df)
-                                # title of spectra #Maybe remove NuXL:na
-                                spectra_name = os.path.splitext(selected_file)[0] +" Scan# " + str({selected_row['ScanNr'][0]}).strip('{}') + " Pep: " + str({selected_row['Peptide'][0]}).strip('{}\'') 
-                                # generate ms2 spectra
-                                fig = plot_ms2_spectrum_full(annotation_df, spectra_name, "black")
-                                #show figure
-                                show_fig(fig,  f"{os.path.splitext(selected_file)[0]}_scan_{str({selected_row['ScanNr'][0]}).strip('{}')}")
-
+                        annotation_data = []
+                        for i, (mz, intensity) in enumerate(zip(mz_full, inten_full)):
+                            match_indices = matches[i]
+                            if match_indices:
+                                matched_idx = min(match_indices, key=lambda j: abs(annotation_mz[j] - mz))
+                                annotation = annotation_data_idxml['anotarray'][matched_idx]
                             else:
-                                # if any list empty
-                                st.warning("Annotation not available for this peptide")
+                                annotation = ' '
+                            annotation_data.append({
+                                'mzarray': mz,
+                                'intarray': intensity,
+                                'anotarray': annotation
+                            })
+                    else:
+                        # Use IDXML annotations directly if MS2 is missing
+                        annotation_data = [
+                            {'mzarray': mz, 'intarray': i, 'anotarray': anot}
+                            for i, mz, anot in zip(intensities, mz_values, ions)
+                        ]
+
+                    # Display annotated spectrum
+                    if annotation_data:
+                        annotation_df = pd.DataFrame(annotation_data)
+                        scan_nr = str(row['ScanNr'])
+                        peptide = row['Peptide']
+                        spectra_name = f"{os.path.splitext(selected_file)[0]} Scan# {scan_nr} Pep: {peptide}"
+                        fig = plot_ms2_spectrum_full(annotation_df, spectra_name, "black")
+                        show_fig(fig, f"{os.path.splitext(selected_file)[0]}_scan_{scan_nr}")
+                    else:
+                        st.warning("Annotation not available for this peptide")
                                     
         #with PRTs Table
     with tabs_[1]:
